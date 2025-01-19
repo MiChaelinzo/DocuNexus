@@ -1,0 +1,14 @@
+streamlit
+boto3
+pandas
+numpy
+Pillow
+matplotlib
+gTTS  
+textblob
+translate
+trulens
+langchain
+logging
+pytesseract
+snowflake-connector-python
