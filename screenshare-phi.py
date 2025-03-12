@@ -1,77 +1,205 @@
-import cv2
-import base64
-from azure.ai.openai import OpenAIClient
-from azure.core.credentials import AzureKeyCredential
+import streamlit as st
+from mss import mss
 from PIL import Image
-import io
+import time
+import cv2
+import numpy as np
+import base64
+from io import BytesIO
 
-# Initialize Azure OpenAI Client
-azure_api_key = "YOUR_AZURE_API_KEY"  # Replace with your Azure API Key
-azure_endpoint = "YOUR_AZURE_ENDPOINT"  # Replace with your Azure Endpoint
-client = OpenAIClient(endpoint=azure_endpoint, credential=AzureKeyCredential(azure_api_key))
+from azure.ai.inference import ChatCompletionsClient
+from azure.ai.inference.models import (
+    SystemMessage,
+    UserMessage,
+    TextContentItem,
+    ImageContentItem,
+    ImageUrl,
+    ImageDetailLevel,
+)
+from azure.core.credentials import AzureKeyCredential
 
-# Function to send frames to the Phi-4 model for analysis
-def analyze_frame_with_phi4(image):
-    # Convert the frame (PIL Image) to base64 for sending to the Phi-4 model
-    buffered = io.BytesIO()
-    image.save(buffered, format="JPEG")
-    img_bytes = buffered.getvalue()
-    base64_image = base64.b64encode(img_bytes).decode()
+# Cyberpunk color palette (neon on dark)
+NEON_GREEN = "#39FF14"
+NEON_PINK = "#FF69B4"
+NEON_BLUE = "#00FFFF"
+DARK_BG = "#111111"  # Slightly lighter than pure black for better readability
 
-    # Define the prompt and model inputs
-    prompt = "Provide a detailed analysis of this image, identifying objects and describing the scene."
-    messages = [
-        {"role": "system", "content": "You are a multimodal analysis expert."},
-        {"role": "user", "content": prompt, "inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
-    ]
+# --- Streamlit Styling ---
+st.set_page_config(
+    page_title="CyberScreen",
+    page_icon="🌃",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+    #theme="dark",  # Use Streamlit's built-in dark theme as a base
+)
 
-    # Call the Phi-4 model
-    response = client.get_chat_completions(
-        model="Phi-4-multimodal-instruct",  # Ensure this is correct for your Phi-4 model
-        messages=messages,
-        max_tokens=500
-    )
-    
-    # Extract and return the model's response
-    return response.choices[0].message["content"]
+# Custom CSS for cyberpunk aesthetics
+st.markdown(
+    f"""
+    <style>
+        body {{
+            color: {NEON_GREEN};
+            background-color: {DARK_BG};
+        }}
+        .stApp {{
+            background-color: {DARK_BG};
+        }}
+        h1, h2, h3, h4, h5, h6 {{
+            color: {NEON_PINK};
+        }}
+        .stButton > button {{
+            color: {NEON_BLUE};
+            border-color: {NEON_BLUE};
+            background-color: transparent;
+        }}
+        .stButton > button:hover {{
+            background-color: {NEON_BLUE};
+            color: {DARK_BG};
+        }}
+        .stTextInput > div > div > input {{
+            color: {NEON_GREEN};
+            background-color: #222222;
+            border-color: {NEON_GREEN};
+        }}
+        .stTextArea > div > div > textarea {{
+            color: {NEON_GREEN};
+            background-color: #222222;
+            border-color: {NEON_GREEN};
+        }}
+        .stChatMessage {{
+            background-color: #222222;
+            border-color: {NEON_GREEN};
+            color: {NEON_GREEN};
+        }}
+        .stChatMessage.user {{
+            border-left-color: {NEON_PINK}; /* Differentiate user messages */
+        }}
+        .stSpinner > div > div {{ /* Style the spinner */
+            border-color: {NEON_BLUE};
+            border-right-color: transparent; /* Make it neon blue */
+        }}
+        .streamlit-expanderHeader {{
+            color: {NEON_PINK} !important; /* Ensure expander header text is neon pink */
+        }}
+        .streamlit-expanderContent {{
+            color: {NEON_GREEN}; /* Expander content text color */
+        }}
 
-# Streamlit Web App
-def main():
-    st.set_page_config(page_title="Streamlit Phi-4 Webcam App")
-    st.title("Webcam Display with Phi-4 Multimodal Analysis")
-    st.caption("Powered by Azure OpenAI, Phi-4 Multimodal Model, and Streamlit")
 
-    # Start capturing video
-    cap = cv2.VideoCapture(0)
-    frame_placeholder = st.empty()
-    analysis_placeholder = st.empty()
-    stop_button_pressed = st.button("Stop")
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    while cap.isOpened() and not stop_button_pressed:
-        ret, frame = cap.read()
-        if not ret:
-            st.write("Video Capture Ended")
-            break
 
-        # Convert frame for display and analysis
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(frame_rgb)
+# --- Azure AI Inference - Phi-4 Model Client Setup ---
+AZURE_ENDPOINT = "https://models.inference.ai.azure.com"
+AZURE_MODEL_NAME = "Phi-4-multimodal-instruct"
+AZURE_API_KEY = st.secrets["azure_ai"]["api_key"]
+phi_model = None
+phi_client = None
 
-        # Display the frame
-        frame_placeholder.image(frame_rgb, channels="RGB")
+if not AZURE_API_KEY:
+    st.error("ERROR: Access Keycard Missing. Neural Net Interface Offline.") # Cyberpunk error message
+    phi_model = None
+else:
+    try:
+        phi_client = ChatCompletionsClient(
+            endpoint=AZURE_ENDPOINT,
+            credential=AzureKeyCredential(AZURE_API_KEY),
+        )
+        phi_model = AZURE_MODEL_NAME
+    except Exception as e:
+        st.error(f"ERROR: Neural Net Client Init Failure: {e}") # Cyberpunk error message
+        phi_model = None
 
-        # Analyze the frame using Phi-4
-        analysis_placeholder.text("Analyzing frame with Phi-4...")
-        try:
-            analysis = analyze_frame_with_phi4(image)
-            analysis_placeholder.text(f"Phi-4 Analysis: {analysis}")
-        except Exception as e:
-            analysis_placeholder.text(f"Error in analysis: {e}")
 
-        # Break if 'Stop' button is pressed
-        if cv2.waitKey(1) & 0xFF == ord("q") or stop_button_pressed:
-            break
+# --- Streamlit App Content ---
+st.title("CyberScreen: Visual Data Stream Analysis 🌃") # Cyberpunk title
 
-    # Release resources
-    cap.release()
-    cv2.destroyAllWindows()
+# Session state management
+if 'sharing' not in st.session_state:
+    st.session_state.update({
+        'sharing': False,
+        'chat_history': [],
+        'current_frame': None
+    })
+
+def toggle_sharing():
+    st.session_state.sharing = not st.session_state.sharing
+
+col1, col2 = st.columns([3, 2])
+
+with col1:
+    st.button("Engage/Disengage Stream", on_click=toggle_sharing) # Cyberpunk button text
+    image_placeholder = st.empty()
+
+with col2:
+    st.subheader("Data Matrix Interface (Phi-4 Core)") # Cyberpunk subtitle
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Query visual data stream..."): # Cyberpunk chat input prompt
+        if st.session_state.current_frame is None:
+            st.error("ERROR: Data Stream Inactive. Engage Stream First!") # Cyberpunk error
+        elif phi_model is None:
+            st.error("ERROR: Phi-4 Core Offline. Check System Connection.") # Cyberpunk error
+        else:
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+            with st.spinner("Processing visual data through Phi-4 Neural Net..."): # Cyberpunk spinner text
+                try:
+                    img_pil = Image.fromarray(st.session_state.current_frame)
+
+                    buffered = BytesIO()
+                    img_pil.save(buffered, format="PNG")
+                    img_bytes = buffered.getvalue()
+                    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                    data_url = f"data:image/png;base64,{img_base64}"
+
+                    messages = [
+                        UserMessage(
+                            content=[
+                                TextContentItem(text=prompt),
+                                ImageContentItem(
+                                    image_url=ImageUrl(url=data_url)
+                                ),
+                            ],
+                        ),
+                    ]
+
+                    response = phi_client.complete(
+                        model=phi_model,
+                        messages=messages
+                    )
+
+                    ai_response_text = response.choices[0].message.content
+
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": ai_response_text
+                    })
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"ERROR: Data stream analysis failure: {e}") # Cyberpunk error
+                    st.error(f"Debug trace: {e}") # Keep technical detail for debugging
+
+monitor = {"top": 0, "left": 0, "width": 1920, "height": 1080}
+
+with mss() as sct:
+    while st.session_state.sharing:
+        screen_frame = sct.grab(monitor)
+        img = Image.frombytes("RGB", screen_frame.size, screen_frame.rgb)
+        frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        st.session_state.current_frame = frame
+        display_img = Image.fromarray(frame)
+        display_img.thumbnail((1024, 576))
+        image_placeholder.image(display_img)
+        time.sleep(0.1)
+
+if not st.session_state.sharing:
+    image_placeholder.empty()
+    st.session_state.current_frame = None
